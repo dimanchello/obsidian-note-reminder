@@ -1,12 +1,16 @@
+import * as yaml from "js-yaml";
 import type { FrontmatterEditResult } from "../interfaces";
 import { DATE_LAST_VISIT_FIELD } from "../constants";
 
-const FRONTMATTER_REGEX = /^---\n([\s\S]*?)\n---/;
+const FRONTMATTER_REGEX = /^---\r?\n([\s\S]*?)\r?\n---/;
 const YAML_DATE_REGEX = /^\d{4}-\d{2}-\d{2}$/;
 
-function escapeRegex(str: string): string {
-  return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
+const YAML_DUMP_OPTIONS: yaml.DumpOptions = {
+  indent: 2,
+  lineWidth: -1,
+  noRefs: true,
+  sortKeys: false,
+};
 
 export class FrontmatterEditor {
   public setField(content: string, field: string, value: string): FrontmatterEditResult {
@@ -19,29 +23,55 @@ export class FrontmatterEditor {
       };
     }
 
-    const frontmatter = match[1]!;
-    const fieldRegex = new RegExp(`^${escapeRegex(field)}:\\s*.*$`, "m");
+    const raw = match[1]!;
+    let obj: Record<string, unknown>;
 
-    if (fieldRegex.test(frontmatter)) {
-      const newFrontmatter = frontmatter.replace(fieldRegex, `${field}: ${value}`);
-      return { kind: "updated", content: content.replace(frontmatter, newFrontmatter) };
+    if (raw.trim() === "") {
+      obj = {};
+    } else {
+      const parsed = yaml.load(raw, { schema: yaml.FAILSAFE_SCHEMA });
+      if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
+        obj = parsed as Record<string, unknown>;
+      } else {
+        obj = {};
+      }
     }
 
-    const lines = frontmatter.split("\n");
-    lines.splice(1, 0, `${field}: ${value}`);
+    obj[field] = value;
 
-    return { kind: "updated", content: content.replace(frontmatter, lines.join("\n")) };
+    const newYaml = yaml.dump(obj, YAML_DUMP_OPTIONS);
+    const newFrontmatter = `---\n${newYaml}---`;
+
+    return {
+      kind: "updated",
+      content: content.replace(match[0], newFrontmatter),
+    };
   }
 
   public getField(content: string, field: string): string | null {
     const match = FRONTMATTER_REGEX.exec(content);
     if (match === null) return null;
 
-    const frontmatter = match[1]!;
-    const fieldRegex = new RegExp(`^${escapeRegex(field)}:\\s*(.*)$`, "m");
-    const fieldMatch = frontmatter.match(fieldRegex);
+    const raw = match[1]!;
+    if (raw.trim() === "") return null;
 
-    return fieldMatch?.[1]?.trim() ?? null;
+    const parsed = yaml.load(raw, { schema: yaml.FAILSAFE_SCHEMA });
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return null;
+    }
+
+    const value = (parsed as Record<string, unknown>)[field];
+    if (value === null || value === undefined) return null;
+
+    if (value instanceof Date) {
+      return value.toISOString().split("T")[0]!;
+    }
+
+    if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+      return String(value);
+    }
+
+    return null;
   }
 
   public needsUpdate(currentValue: string | null | undefined, today: string): boolean {
