@@ -15,6 +15,8 @@ function createSettingsMock(overrides?: Partial<IPluginSettings>): IPluginSettin
     forgottenNoteRotationMinutes: 10,
     excludedPaths: [],
     includedPaths: [],
+    displayPathSegments: 2,
+    notesToShow: 1,
     ...overrides,
   };
 }
@@ -233,6 +235,59 @@ describe("ForgottenNotePicker", () => {
     expect(result?.name).toBe("note");
     expect(result?.lastVisit).toBe("2026-05-01");
     expect(result?.daysAgo).toBe(29);
+  });
+
+  describe("pickMultiple", () => {
+    it("returns empty array when no candidates exist", () => {
+      const file = createMockFile("note.md", "note");
+      const lastVisits = new Map([["note.md", "2026-05-30"]]);
+      metadata = createMetadataMock(lastVisits);
+      vault = createVaultMock([file]);
+      persistence = createPersistenceMock(null);
+      settings = createSettingsMock({ forgottenDaysThreshold: 15 });
+      picker = new ForgottenNotePicker(metadata, vault, persistence, settings);
+
+      const result = picker.pickMultiple(3);
+
+      expect(result).toEqual([]);
+    });
+
+    it("returns top N most forgotten notes", () => {
+      const file1 = createMockFile("oldest.md", "oldest");
+      const file2 = createMockFile("old.md", "old");
+      const file3 = createMockFile("recent.md", "recent");
+      const lastVisits = new Map([
+        ["oldest.md", "2025-01-01"],
+        ["old.md", "2025-06-01"],
+        ["recent.md", "2026-05-01"],
+      ]);
+      metadata = createMetadataMock(lastVisits);
+      vault = createVaultMock([file1, file2, file3]);
+      persistence = createPersistenceMock(null);
+      settings = createSettingsMock({ forgottenDaysThreshold: 15 });
+      picker = new ForgottenNotePicker(metadata, vault, persistence, settings);
+
+      const result = picker.pickMultiple(2);
+
+      expect(result).toHaveLength(2);
+      expect(result[0]?.path).toBe("oldest.md");
+      expect(result[1]?.path).toBe("old.md");
+    });
+
+    it("returns fewer notes when count exceeds candidate pool", () => {
+      const file = createMockFile("note.md", "note");
+      const lastVisits = new Map([["note.md", undefined]]);
+      metadata = createMetadataMock(lastVisits);
+      vault = createVaultMock([file]);
+      persistence = createPersistenceMock(null);
+      settings = createSettingsMock({ forgottenDaysThreshold: 15 });
+      picker = new ForgottenNotePicker(metadata, vault, persistence, settings);
+
+      const result = picker.pickMultiple(5);
+
+      expect(result).toHaveLength(1);
+      expect(result[0]?.path).toBe("note.md");
+    });
   });
 
   describe("rotation mode", () => {

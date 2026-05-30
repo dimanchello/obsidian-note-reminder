@@ -80,7 +80,18 @@ export class ForgottenNotePicker implements IForgottenNotePicker {
     return null;
   }
 
-  private selectNextForgotten(previousPath: string | undefined): TFile | null {
+  public pickMultiple(count: number): IForgottenNoteInfo[] {
+    const candidates = this.getForgottenCandidates();
+
+    if (candidates.length === 0) {
+      return [];
+    }
+
+    this.sortCandidatesByForgottenness(candidates);
+    return candidates.slice(0, count).map((f) => this.buildNoteInfo(f));
+  }
+
+  private getForgottenCandidates(): TFile[] {
     const files = this.vault.getMarkdownFiles();
     const threshold = new Date();
     threshold.setDate(threshold.getDate() - this.settings.forgottenDaysThreshold);
@@ -99,10 +110,10 @@ export class ForgottenNotePicker implements IForgottenNotePicker {
       }
     }
 
-    if (candidates.length === 0) {
-      return null;
-    }
+    return candidates;
+  }
 
+  private sortCandidatesByForgottenness(candidates: TFile[]): void {
     candidates.sort((a, b) => {
       const visitA = this.readLastVisitFromCache(a);
       const visitB = this.readLastVisitFromCache(b);
@@ -121,6 +132,16 @@ export class ForgottenNotePicker implements IForgottenNotePicker {
       }
       return a.path.localeCompare(b.path);
     });
+  }
+
+  private selectNextForgotten(previousPath: string | undefined): TFile | null {
+    const candidates = this.getForgottenCandidates();
+
+    if (candidates.length === 0) {
+      return null;
+    }
+
+    this.sortCandidatesByForgottenness(candidates);
 
     if (previousPath === undefined) {
       return candidates[0] ?? null;
@@ -136,23 +157,7 @@ export class ForgottenNotePicker implements IForgottenNotePicker {
   }
 
   private selectRandomForgotten(): TFile | null {
-    const files = this.vault.getMarkdownFiles();
-    const threshold = new Date();
-    threshold.setDate(threshold.getDate() - this.settings.forgottenDaysThreshold);
-
-    const candidates: TFile[] = [];
-
-    for (const file of files) {
-      if (!this.isIncluded(file.path)) {
-        continue;
-      }
-      if (this.isExcluded(file.path)) {
-        continue;
-      }
-      if (this.isForgotten(file, threshold)) {
-        candidates.push(file);
-      }
-    }
+    const candidates = this.getForgottenCandidates();
 
     if (candidates.length === 0) {
       return null;

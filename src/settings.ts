@@ -100,5 +100,43 @@ export class DateTrackerSettingTab extends PluginSettingTab {
         await this.plugin.saveSettings();
       });
     setupTextareaBelow(includedSetting, includedTextarea);
+
+    new Setting(containerEl)
+      .setName("Сегментов пути в названии")
+      .setDesc("Сколько последних сегментов пути показывать в названии заметки (например, 2 = «папка/заметка», 1 = «заметка»)")
+      .addText((text) =>
+        text
+          .setPlaceholder("2")
+          .setValue(String(this.plugin.pluginSettings.displayPathSegments))
+          .onChange(async (value) => {
+            const num = Number(value);
+            if (!Number.isNaN(num) && num > 0 && Number.isInteger(num)) {
+              this.plugin.pluginSettings = {
+                ...this.plugin.pluginSettings,
+                displayPathSegments: num,
+              };
+              await this.plugin.saveSettings();
+            }
+          }),
+      );
+
+    new Setting(containerEl)
+      .setName("Заметок для показа")
+      .setDesc("Сколько забытых заметок отображать одновременно")
+      .addText((text) =>
+        text
+          .setPlaceholder("1")
+          .setValue(String(this.plugin.pluginSettings.notesToShow))
+          .onChange(async (value) => {
+            const num = Number(value);
+            if (!Number.isNaN(num) && num > 0 && Number.isInteger(num)) {
+              this.plugin.pluginSettings = {
+                ...this.plugin.pluginSettings,
+                notesToShow: num,
+              };
+              await this.plugin.saveSettings();
+            }
+          }),
+      );
   }
 }

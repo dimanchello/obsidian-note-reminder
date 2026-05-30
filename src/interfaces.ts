@@ -5,6 +5,8 @@ export interface IPluginSettings {
   readonly forgottenNoteRotationMinutes: number;
   readonly excludedPaths: readonly string[];
   readonly includedPaths: readonly string[];
+  readonly displayPathSegments: number;
+  readonly notesToShow: number;
 }
 
 export interface IForgottenNoteInfo {
@@ -50,10 +52,12 @@ export interface IVisitTracker {
 
 export interface IForgottenNotePicker {
   pick(): Promise<IForgottenNoteInfo | null>;
+  pickMultiple(count: number): IForgottenNoteInfo[];
 }
 
 export interface IDateTrackerAPI {
   getForgottenNote(): Promise<IForgottenNoteInfo | null>;
+  getForgottenNotes(count: number): IForgottenNoteInfo[];
   getRotationIntervalMs(): number;
 }
 

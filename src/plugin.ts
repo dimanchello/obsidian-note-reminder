@@ -1,4 +1,4 @@
-import { Plugin, Notice } from "obsidian";
+import { Plugin, Notice, MarkdownRenderChild, App } from "obsidian";
 import { FrontmatterEditor } from "./services/frontmatter-editor";
 import { VisitTracker } from "./services/visit-tracker";
 import { ForgottenNotePicker } from "./services/forgotten-note-picker";
@@ -12,6 +12,8 @@ import type {
   IFrontmatterCache,
   IPluginData,
   IPluginSettings,
+  IDateTrackerAPI,
+  IForgottenNoteInfo,
 } from "./interfaces";
 import type { Vault, MetadataCache, TFile } from "obsidian";
 import { PLUGIN_NAME, API_GLOBAL_KEY, DEFAULT_SETTINGS } from "./constants";
@@ -38,6 +40,8 @@ export default class DateTrackerPlugin extends Plugin {
 
     this.registerFileOpenHandler();
     this.exposeAPI();
+    this.registerCodeBlockRenderer();
+    this.registerInsertCommand();
 
     console.warn(`${PLUGIN_NAME} loaded`);
   }
@@ -147,5 +151,123 @@ export default class DateTrackerPlugin extends Plugin {
         await this.saveData({ ...existing, data } as Record<string, unknown>);
       },
     };
+  }
+
+  private registerCodeBlockRenderer(): void {
+    this.registerMarkdownCodeBlockProcessor("forgotten-notes", (_source, el, ctx) => {
+      const child = new ForgottenNotesRenderChild(el, this.app, this.api, () => this.pluginSettings);
+      ctx.addChild(child);
+    });
+  }
+
+  private registerInsertCommand(): void {
+    this.addCommand({
+      id: "insert-forgotten-notes-block",
+      name: "Вставить блок забытых заметок",
+      editorCallback: (editor): void => {
+        editor.replaceSelection("```forgotten-notes\n```\n");
+      },
+    });
+  }
+}
+
+class ForgottenNotesRenderChild extends MarkdownRenderChild {
+  private intervalId: number | null = null;
+
+  constructor(
+    containerEl: HTMLElement,
+    private readonly app: App,
+    private readonly api: IDateTrackerAPI,
+    private readonly getSettings: () => IPluginSettings,
+  ) {
+    super(containerEl);
+  }
+
+  public override onload(): void {
+    void this.render();
+
+    const intervalMs = this.api.getRotationIntervalMs();
+    this.intervalId = window.setInterval(() => {
+      if (!this.containerEl.isConnected) return;
+      void this.render();
+    }, intervalMs);
+  }
+
+  public override onunload(): void {
+    if (this.intervalId !== null) {
+      clearInterval(this.intervalId);
+      this.intervalId = null;
+    }
+  }
+
+  private async render(): Promise<void> {
+    const container = this.containerEl;
+    container.empty();
+    container.style.width = "100%";
+
+    const settings = this.getSettings();
+
+    const scale = Math.max(0.7, 1 - (settings.notesToShow - 1) * 0.1);
+
+    if (settings.notesToShow <= 1) {
+      container.style.cssText +=
+        "padding:10px;border-radius:8px;background-color:rgba(128,128,128,0.05);border:1px solid rgba(128,128,128,0.2);display:flex;align-items:center;gap:12px;";
+
+      const note = await this.api.getForgottenNote();
+      if (note === null) {
+        container.innerHTML = `<span style="opacity:0.6;">✨ Все заметки недавно посещались</span>`;
+        return;
+      }
+      this.renderNoteContent(container, note, scale, settings.displayPathSegments);
+    } else {
+      container.style.display = "flex";
+      container.style.flexWrap = "wrap";
+      container.style.gap = "12px";
+
+      const notes = this.api.getForgottenNotes(settings.notesToShow);
+      if (notes.length === 0) {
+        container.innerHTML = `<span style="opacity:0.6;">✨ Все заметки недавно посещались</span>`;
+        return;
+      }
+
+      for (const note of notes) {
+        const cardEl = container.createEl("div");
+        cardEl.style.cssText =
+          "flex:1;min-width:160px;padding:10px;border-radius:8px;background-color:rgba(128,128,128,0.05);border:1px solid rgba(128,128,128,0.2);display:flex;align-items:center;gap:12px;";
+        this.renderNoteContent(cardEl, note, scale, settings.displayPathSegments);
+      }
+    }
+  }
+
+  private renderNoteContent(containerEl: HTMLElement, note: IForgottenNoteInfo, scale: number, displayPathSegments: number): void {
+    containerEl.style.fontSize = `${String(scale)}em`;
+    containerEl.createEl("span", { text: "💭", attr: { style: "font-size:1.5em;" } });
+
+    const textWrapper = containerEl.createEl("div");
+    textWrapper.style.flex = "1";
+
+    const segments = note.path.replace(/\.md$/, "").split("/");
+    const displayPath = segments.slice(-displayPathSegments).join("/");
+
+    const linkEl = textWrapper.createEl("span", { text: displayPath });
+    linkEl.style.cssText = "color:var(--link-color);cursor:pointer;font-weight:600;";
+    linkEl.className = "internal-link";
+    linkEl.setAttribute("data-href", note.path);
+    linkEl.addEventListener("click", (e: MouseEvent) => {
+      e.preventDefault();
+      void this.app.workspace.openLinkText(note.path, "", true);
+    });
+
+    if (note.daysAgo !== null) {
+      textWrapper.createEl("div", {
+        text: `Не посещалось ${String(note.daysAgo)} дней`,
+        attr: { style: "font-size:0.85em;opacity:0.5;margin-top:2px;" },
+      });
+    } else {
+      textWrapper.createEl("div", {
+        text: "Ни разу не открывалась",
+        attr: { style: "font-size:0.85em;opacity:0.5;margin-top:2px;" },
+      });
+    }
   }
 }

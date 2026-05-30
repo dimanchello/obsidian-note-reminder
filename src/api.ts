@@ -12,6 +12,10 @@ export class DateTrackerAPI implements IDateTrackerAPI {
     return this.picker.pick();
   }
 
+  public getForgottenNotes(count: number): IForgottenNoteInfo[] {
+    return this.picker.pickMultiple(count);
+  }
+
   public getRotationIntervalMs(): number {
     return this.picker.getRotationIntervalMs();
   }

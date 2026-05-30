@@ -11,4 +11,6 @@ export const DEFAULT_SETTINGS: IPluginSettings = {
   forgottenNoteRotationMinutes: 10,
   excludedPaths: [".obsidian/", "шаблоны/"],
   includedPaths: [],
+  displayPathSegments: 2,
+  notesToShow: 1,
 };
