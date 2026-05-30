@@ -1,0 +1,10 @@
+{
+  "id": "note-reminder",
+  "name": "Note reminder",
+  "version": "1.0.0",
+  "minAppVersion": "0.15.0",
+  "description": "Авто-обновление date_last_visit и показ забытых заметок",
+  "author": "Dimanchello",
+  "authorUrl": "https://github.com/dimanchello/",
+  "isDesktopOnly": false
+}
