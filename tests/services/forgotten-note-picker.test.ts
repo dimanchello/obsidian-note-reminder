@@ -1,7 +1,6 @@
 import type { TFile } from "obsidian";
 import { ForgottenNotePicker } from "../../src/services/forgotten-note-picker";
 import type {
-  IMetadataReader,
   IVaultReader,
   IDataPersistence,
   IPluginData,
@@ -32,18 +31,6 @@ function createMockFile(path: string, basename: string): TFile {
   } as TFile;
 }
 
-function createMetadataMock(lastVisits: Map<string, string | undefined>): IMetadataReader {
-  return {
-    getFileCache: jest.fn().mockImplementation((file: TFile) => {
-      const visit = lastVisits.get(file.path);
-      if (visit === undefined) {
-        return { frontmatter: {} };
-      }
-      return { frontmatter: { date_last_visit: visit } };
-    }),
-  };
-}
-
 function createVaultMock(files: TFile[]): IVaultReader {
   return {
     getMarkdownFiles: jest.fn().mockReturnValue(files),
@@ -58,16 +45,15 @@ function createVaultMock(files: TFile[]): IVaultReader {
 function createPersistenceMock(initialData: IPluginData | null): IDataPersistence {
   let data = initialData;
   return {
-    loadData: jest.fn().mockImplementation(() => Promise.resolve(data)),
+    loadData: jest.fn().mockImplementation(() => Promise.resolve(data ? { ...data } : null)),
     saveData: jest.fn().mockImplementation((newData: IPluginData) => {
-      data = newData;
+      data = { ...(data ?? {}), ...newData };
       return Promise.resolve();
     }),
   };
 }
 
 describe("ForgottenNotePicker", () => {
-  let metadata: IMetadataReader;
   let vault: IVaultReader;
   let persistence: IDataPersistence;
   let settings: IPluginSettings;
@@ -84,25 +70,24 @@ describe("ForgottenNotePicker", () => {
 
   it("returns null when no candidates exist", async () => {
     const file = createMockFile("note.md", "note");
-    const lastVisits = new Map([["note.md", "2026-05-30"]]);
-    metadata = createMetadataMock(lastVisits);
     vault = createVaultMock([file]);
-    persistence = createPersistenceMock(null);
+    persistence = createPersistenceMock({
+      visits: { "note.md": "2026-05-30" },
+    });
     settings = createSettingsMock({ forgottenDaysThreshold: 15 });
-    picker = new ForgottenNotePicker(metadata, vault, persistence, settings);
+    picker = new ForgottenNotePicker(vault, persistence, settings);
 
     const result = await picker.pick();
 
     expect(result).toBeNull();
   });
 
-  it("returns a note without frontmatter as candidate", async () => {
+  it("returns a note without visit entry as candidate", async () => {
     const file = createMockFile("note.md", "note");
-    metadata = createMetadataMock(new Map());
     vault = createVaultMock([file]);
     persistence = createPersistenceMock(null);
     settings = createSettingsMock();
-    picker = new ForgottenNotePicker(metadata, vault, persistence, settings);
+    picker = new ForgottenNotePicker(vault, persistence, settings);
 
     const result = await picker.pick();
 
@@ -110,29 +95,14 @@ describe("ForgottenNotePicker", () => {
     expect(result?.path).toBe("note.md");
   });
 
-  it("returns a note without date_last_visit field as candidate", async () => {
+  it("returns a note with old visit date as candidate", async () => {
     const file = createMockFile("note.md", "note");
-    const lastVisits = new Map([["note.md", undefined]]);
-    metadata = createMetadataMock(lastVisits);
     vault = createVaultMock([file]);
-    persistence = createPersistenceMock(null);
-    settings = createSettingsMock();
-    picker = new ForgottenNotePicker(metadata, vault, persistence, settings);
-
-    const result = await picker.pick();
-
-    expect(result).not.toBeNull();
-    expect(result?.path).toBe("note.md");
-  });
-
-  it("returns a note with old date_last_visit as candidate", async () => {
-    const file = createMockFile("note.md", "note");
-    const lastVisits = new Map([["note.md", "2025-01-01"]]);
-    metadata = createMetadataMock(lastVisits);
-    vault = createVaultMock([file]);
-    persistence = createPersistenceMock(null);
+    persistence = createPersistenceMock({
+      visits: { "note.md": "2025-01-01" },
+    });
     settings = createSettingsMock({ forgottenDaysThreshold: 15 });
-    picker = new ForgottenNotePicker(metadata, vault, persistence, settings);
+    picker = new ForgottenNotePicker(vault, persistence, settings);
 
     const result = await picker.pick();
 
@@ -145,16 +115,10 @@ describe("ForgottenNotePicker", () => {
     const obsidianFile = createMockFile(".obsidian/config.md", "config");
     const templateFile = createMockFile("шаблоны/template.md", "template");
     const goodFile = createMockFile("note.md", "note");
-    const lastVisits = new Map([
-      [".obsidian/config.md", undefined],
-      ["шаблоны/template.md", undefined],
-      ["note.md", undefined],
-    ]);
-    metadata = createMetadataMock(lastVisits);
     vault = createVaultMock([obsidianFile, templateFile, goodFile]);
     persistence = createPersistenceMock(null);
     settings = createSettingsMock({ excludedPaths: ["\\.obsidian/", "шаблоны/"] });
-    picker = new ForgottenNotePicker(metadata, vault, persistence, settings);
+    picker = new ForgottenNotePicker(vault, persistence, settings);
 
     const result = await picker.pick();
 
@@ -164,55 +128,42 @@ describe("ForgottenNotePicker", () => {
   it("respects included paths filter", async () => {
     const excludedFile = createMockFile("archive/old.md", "old");
     const includedFile = createMockFile("daily/2026-05-30.md", "2026-05-30");
-    const lastVisits = new Map([
-      ["archive/old.md", undefined],
-      ["daily/2026-05-30.md", undefined],
-    ]);
-    metadata = createMetadataMock(lastVisits);
     vault = createVaultMock([excludedFile, includedFile]);
     persistence = createPersistenceMock(null);
     settings = createSettingsMock({ includedPaths: ["daily/"] });
-    picker = new ForgottenNotePicker(metadata, vault, persistence, settings);
+    picker = new ForgottenNotePicker(vault, persistence, settings);
 
     const result = await picker.pick();
 
     expect(result?.path).toBe("daily/2026-05-30.md");
   });
 
-  it("returns cached pick within 10 minutes", async () => {
+  it("returns cached pick within interval", async () => {
     const file = createMockFile("note.md", "note");
     const oldNote = createMockFile("old.md", "old");
-    const lastVisits = new Map([
-      ["note.md", undefined],
-      ["old.md", undefined],
-    ]);
-
-    metadata = createMetadataMock(lastVisits);
     vault = createVaultMock([file, oldNote]);
     persistence = createPersistenceMock({
       lastPickTime: Date.now(),
       lastPickPath: "note.md",
+      visits: { "note.md": undefined },
     });
     settings = createSettingsMock();
-    picker = new ForgottenNotePicker(metadata, vault, persistence, settings);
+    picker = new ForgottenNotePicker(vault, persistence, settings);
 
     const result = await picker.pick();
 
     expect(result?.path).toBe("note.md");
   });
 
-  it("picks a new note after 10 minutes pass", async () => {
+  it("picks a new note after interval passes", async () => {
     const file = createMockFile("note.md", "note");
-    const lastVisits = new Map([["note.md", undefined]]);
-
-    metadata = createMetadataMock(lastVisits);
     vault = createVaultMock([file]);
     persistence = createPersistenceMock({
       lastPickTime: Date.now() - PICK_INTERVAL_MS - 1,
       lastPickPath: "old.md",
     });
     settings = createSettingsMock();
-    picker = new ForgottenNotePicker(metadata, vault, persistence, settings);
+    picker = new ForgottenNotePicker(vault, persistence, settings);
 
     const result = await picker.pick();
 
@@ -222,12 +173,12 @@ describe("ForgottenNotePicker", () => {
 
   it("builds correct info with daysAgo", async () => {
     const file = createMockFile("note.md", "note");
-    const lastVisits = new Map([["note.md", "2026-05-01"]]);
-    metadata = createMetadataMock(lastVisits);
     vault = createVaultMock([file]);
-    persistence = createPersistenceMock(null);
+    persistence = createPersistenceMock({
+      visits: { "note.md": "2026-05-01" },
+    });
     settings = createSettingsMock({ forgottenDaysThreshold: 15 });
-    picker = new ForgottenNotePicker(metadata, vault, persistence, settings);
+    picker = new ForgottenNotePicker(vault, persistence, settings);
 
     const result = await picker.pick();
 
@@ -238,52 +189,52 @@ describe("ForgottenNotePicker", () => {
   });
 
   describe("pickMultiple", () => {
-    it("returns empty array when no candidates exist", () => {
+    it("returns empty array when no candidates exist", async () => {
       const file = createMockFile("note.md", "note");
-      const lastVisits = new Map([["note.md", "2026-05-30"]]);
-      metadata = createMetadataMock(lastVisits);
       vault = createVaultMock([file]);
-      persistence = createPersistenceMock(null);
+      persistence = createPersistenceMock({
+        visits: { "note.md": "2026-05-30" },
+      });
       settings = createSettingsMock({ forgottenDaysThreshold: 15 });
-      picker = new ForgottenNotePicker(metadata, vault, persistence, settings);
+      picker = new ForgottenNotePicker(vault, persistence, settings);
 
-      const result = picker.pickMultiple(3);
+      const result = await picker.pickMultiple(3);
 
       expect(result).toEqual([]);
     });
 
-    it("returns top N most forgotten notes", () => {
-      const file1 = createMockFile("oldest.md", "oldest");
-      const file2 = createMockFile("old.md", "old");
-      const file3 = createMockFile("recent.md", "recent");
-      const lastVisits = new Map([
-        ["oldest.md", "2025-01-01"],
-        ["old.md", "2025-06-01"],
-        ["recent.md", "2026-05-01"],
-      ]);
-      metadata = createMetadataMock(lastVisits);
-      vault = createVaultMock([file1, file2, file3]);
+    it("returns N random notes from forgotten candidates", async () => {
+      const files = [
+        createMockFile("a.md", "a"),
+        createMockFile("b.md", "b"),
+        createMockFile("c.md", "c"),
+        createMockFile("d.md", "d"),
+        createMockFile("e.md", "e"),
+      ];
+      vault = createVaultMock(files);
       persistence = createPersistenceMock(null);
       settings = createSettingsMock({ forgottenDaysThreshold: 15 });
-      picker = new ForgottenNotePicker(metadata, vault, persistence, settings);
+      picker = new ForgottenNotePicker(vault, persistence, settings);
 
-      const result = picker.pickMultiple(2);
+      const result = await picker.pickMultiple(3);
 
-      expect(result).toHaveLength(2);
-      expect(result[0]?.path).toBe("oldest.md");
-      expect(result[1]?.path).toBe("old.md");
+      expect(result).toHaveLength(3);
+      const allPaths = files.map((f) => f.path);
+      for (const note of result) {
+        expect(allPaths).toContain(note.path);
+      }
+      const paths = result.map((n) => n.path);
+      expect(new Set(paths).size).toBe(paths.length);
     });
 
-    it("returns fewer notes when count exceeds candidate pool", () => {
+    it("returns fewer notes when count exceeds candidate pool", async () => {
       const file = createMockFile("note.md", "note");
-      const lastVisits = new Map([["note.md", undefined]]);
-      metadata = createMetadataMock(lastVisits);
       vault = createVaultMock([file]);
       persistence = createPersistenceMock(null);
       settings = createSettingsMock({ forgottenDaysThreshold: 15 });
-      picker = new ForgottenNotePicker(metadata, vault, persistence, settings);
+      picker = new ForgottenNotePicker(vault, persistence, settings);
 
-      const result = picker.pickMultiple(5);
+      const result = await picker.pickMultiple(5);
 
       expect(result).toHaveLength(1);
       expect(result[0]?.path).toBe("note.md");
@@ -295,16 +246,16 @@ describe("ForgottenNotePicker", () => {
       const recentFile = createMockFile("recent.md", "recent");
       const oldFile = createMockFile("old.md", "old");
       const oldestFile = createMockFile("oldest.md", "oldest");
-      const lastVisits = new Map([
-        ["oldest.md", "2025-01-01"],
-        ["old.md", "2025-06-01"],
-        ["recent.md", "2026-05-01"],
-      ]);
-      metadata = createMetadataMock(lastVisits);
       vault = createVaultMock([recentFile, oldFile, oldestFile]);
-      persistence = createPersistenceMock(null);
+      persistence = createPersistenceMock({
+        visits: {
+          "oldest.md": "2025-01-01",
+          "old.md": "2025-06-01",
+          "recent.md": "2026-05-01",
+        },
+      });
       settings = createSettingsMock({ forgottenDaysThreshold: 15, forgottenNoteRotationMinutes: 10 });
-      picker = new ForgottenNotePicker(metadata, vault, persistence, settings);
+      picker = new ForgottenNotePicker(vault, persistence, settings);
 
       const first = await picker.pick();
 
@@ -315,16 +266,16 @@ describe("ForgottenNotePicker", () => {
       const recentFile = createMockFile("recent.md", "recent");
       const oldFile = createMockFile("old.md", "old");
       const oldestFile = createMockFile("oldest.md", "oldest");
-      const lastVisits = new Map([
-        ["oldest.md", "2025-01-01"],
-        ["old.md", "2025-06-01"],
-        ["recent.md", "2026-05-01"],
-      ]);
-      metadata = createMetadataMock(lastVisits);
       vault = createVaultMock([recentFile, oldFile, oldestFile]);
-      persistence = createPersistenceMock(null);
+      persistence = createPersistenceMock({
+        visits: {
+          "oldest.md": "2025-01-01",
+          "old.md": "2025-06-01",
+          "recent.md": "2026-05-01",
+        },
+      });
       settings = createSettingsMock({ forgottenDaysThreshold: 15, forgottenNoteRotationMinutes: 10 });
-      picker = new ForgottenNotePicker(metadata, vault, persistence, settings);
+      picker = new ForgottenNotePicker(vault, persistence, settings);
 
       await picker.pick();
       jest.advanceTimersByTime(10 * 60 * 1000 + 1);
@@ -337,15 +288,15 @@ describe("ForgottenNotePicker", () => {
     it("wraps around to the first note after cycling through all", async () => {
       const file1 = createMockFile("a.md", "a");
       const file2 = createMockFile("b.md", "b");
-      const lastVisits = new Map([
-        ["a.md", "2025-01-01"],
-        ["b.md", "2025-06-01"],
-      ]);
-      metadata = createMetadataMock(lastVisits);
       vault = createVaultMock([file1, file2]);
-      persistence = createPersistenceMock(null);
+      persistence = createPersistenceMock({
+        visits: {
+          "a.md": "2025-01-01",
+          "b.md": "2025-06-01",
+        },
+      });
       settings = createSettingsMock({ forgottenDaysThreshold: 15, forgottenNoteRotationMinutes: 10 });
-      picker = new ForgottenNotePicker(metadata, vault, persistence, settings);
+      picker = new ForgottenNotePicker(vault, persistence, settings);
 
       await picker.pick();
       jest.advanceTimersByTime(10 * 60 * 1000 + 1);
@@ -357,18 +308,17 @@ describe("ForgottenNotePicker", () => {
       expect(third?.path).toBe("a.md");
     });
 
-    it("null lastVisit (no frontmatter) sorts before dated notes", async () => {
+    it("null lastVisit (no visit data) sorts before dated notes", async () => {
       const datedFile = createMockFile("dated.md", "dated");
-      const noFrontmatterFile = createMockFile("nofront.md", "nofront");
-      const lastVisits = new Map([
-        ["dated.md", "2025-01-01"],
-        ["nofront.md", undefined],
-      ]);
-      metadata = createMetadataMock(lastVisits);
-      vault = createVaultMock([datedFile, noFrontmatterFile]);
-      persistence = createPersistenceMock(null);
+      const noVisitFile = createMockFile("nofront.md", "nofront");
+      vault = createVaultMock([datedFile, noVisitFile]);
+      persistence = createPersistenceMock({
+        visits: {
+          "dated.md": "2025-01-01",
+        },
+      });
       settings = createSettingsMock({ forgottenDaysThreshold: 15, forgottenNoteRotationMinutes: 10 });
-      picker = new ForgottenNotePicker(metadata, vault, persistence, settings);
+      picker = new ForgottenNotePicker(vault, persistence, settings);
 
       const first = await picker.pick();
 
@@ -377,12 +327,10 @@ describe("ForgottenNotePicker", () => {
 
     it("falls back to random selection when rotation is 0", async () => {
       const file = createMockFile("note.md", "note");
-      const lastVisits = new Map([["note.md", undefined]]);
-      metadata = createMetadataMock(lastVisits);
       vault = createVaultMock([file]);
       persistence = createPersistenceMock(null);
       settings = createSettingsMock({ forgottenNoteRotationMinutes: 0 });
-      picker = new ForgottenNotePicker(metadata, vault, persistence, settings);
+      picker = new ForgottenNotePicker(vault, persistence, settings);
 
       const result = await picker.pick();
 

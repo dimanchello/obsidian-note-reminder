@@ -1,34 +1,35 @@
 import type { TFile } from "obsidian";
-import type { IVisitTracker, IMetadataReader, IVaultReader } from "../interfaces";
-import { FrontmatterEditor } from "./frontmatter-editor";
+import type { IVisitTracker, IDataPersistence } from "../interfaces";
 
 export class VisitTracker implements IVisitTracker {
-  private readonly editor: FrontmatterEditor;
-  private readonly metadata: IMetadataReader;
-  private readonly vault: IVaultReader;
+  private readonly persistence: IDataPersistence;
 
-  constructor(editor: FrontmatterEditor, metadata: IMetadataReader, vault: IVaultReader) {
-    this.editor = editor;
-    this.metadata = metadata;
-    this.vault = vault;
+  constructor(persistence: IDataPersistence) {
+    this.persistence = persistence;
   }
 
   public async onFileOpened(file: TFile): Promise<void> {
     const today = this.getTodayStr();
 
-    const cachedFrontmatter = this.metadata.getFileCache(file)?.frontmatter;
-    if (cachedFrontmatter !== undefined) {
-      const cachedValue = cachedFrontmatter[DATE_LAST_VISIT_FIELD];
-      if (typeof cachedValue === "string" && cachedValue === today) {
-        return;
-      }
+    const data = (await this.persistence.loadData()) ?? {};
+    const visits = data.visits ?? {};
+
+    if (visits[file.path] === today) {
+      return;
     }
 
-    const content = await this.vault.read(file);
-    const result = this.editor.updateLastVisit(content, today);
+    visits[file.path] = today;
+    await this.persistence.saveData({ ...data, visits });
+  }
 
-    if (result.kind === "updated") {
-      await this.vault.modify(file, result.content);
+  public async onFileRenamed(oldPath: string, newPath: string): Promise<void> {
+    const data = (await this.persistence.loadData()) ?? {};
+    const visits = data.visits ?? {};
+
+    if (oldPath in visits) {
+      visits[newPath] = visits[oldPath]!;
+      Reflect.deleteProperty(visits, oldPath);
+      await this.persistence.saveData({ ...data, visits });
     }
   }
 
@@ -37,5 +38,3 @@ export class VisitTracker implements IVisitTracker {
     return `${String(now.getFullYear())}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
   }
 }
-
-const DATE_LAST_VISIT_FIELD = "date_last_visit";

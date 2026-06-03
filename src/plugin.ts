@@ -1,21 +1,18 @@
 import { Plugin, Notice, MarkdownRenderChild, App } from "obsidian";
-import { FrontmatterEditor } from "./services/frontmatter-editor";
 import { VisitTracker } from "./services/visit-tracker";
 import { ForgottenNotePicker } from "./services/forgotten-note-picker";
 import { DateTrackerAPI } from "./api";
 import { DateTrackerSettingTab } from "./settings";
 import type {
   IDataStore,
-  IMetadataReader,
   IVaultReader,
   IDataPersistence,
-  IFrontmatterCache,
   IPluginData,
   IPluginSettings,
   IDateTrackerAPI,
   IForgottenNoteInfo,
 } from "./interfaces";
-import type { Vault, MetadataCache, TFile } from "obsidian";
+import type { Vault, TFile } from "obsidian";
 import { PLUGIN_NAME, API_GLOBAL_KEY, DEFAULT_SETTINGS } from "./constants";
 
 export default class DateTrackerPlugin extends Plugin {
@@ -27,18 +24,17 @@ export default class DateTrackerPlugin extends Plugin {
   public override async onload(): Promise<void> {
     await this.loadSettings();
 
-    const editor = new FrontmatterEditor();
-    const metadata = this.createMetadataReader();
     const vault = this.createVaultReader();
     const persistence = this.createPersistence();
 
-    this.visitTracker = new VisitTracker(editor, metadata, vault);
-    this.forgottenNotePicker = new ForgottenNotePicker(metadata, vault, persistence, this.pluginSettings);
+    this.visitTracker = new VisitTracker(persistence);
+    this.forgottenNotePicker = new ForgottenNotePicker(vault, persistence, this.pluginSettings);
     this.api = new DateTrackerAPI(this.forgottenNotePicker);
 
     this.addSettingTab(new DateTrackerSettingTab(this));
 
     this.registerFileOpenHandler();
+    this.registerRenameHandler();
     this.exposeAPI();
     this.registerCodeBlockRenderer();
     this.registerInsertCommand();
@@ -103,21 +99,22 @@ export default class DateTrackerPlugin extends Plugin {
     );
   }
 
+  private registerRenameHandler(): void {
+    this.registerEvent(
+      this.app.vault.on("rename", (file, oldPath) => {
+        const mdFile = file as TFile;
+        if (mdFile.extension !== "md") return;
+        void this.visitTracker.onFileRenamed(oldPath, mdFile.path);
+      }),
+    );
+  }
+
   private exposeAPI(): void {
     (window as unknown as Record<string, unknown>)[API_GLOBAL_KEY] = this.api;
   }
 
   private unexposeAPI(): void {
     Reflect.deleteProperty(window, API_GLOBAL_KEY);
-  }
-
-  private createMetadataReader(): IMetadataReader {
-    const cache: MetadataCache = this.app.metadataCache;
-    return {
-      getFileCache(file: TFile): IFrontmatterCache | null {
-        return cache.getFileCache(file);
-      },
-    };
   }
 
   private createVaultReader(): IVaultReader {
@@ -147,8 +144,10 @@ export default class DateTrackerPlugin extends Plugin {
         return store?.data ?? null;
       },
       saveData: async (data: IPluginData): Promise<void> => {
-        const existing = ((await this.loadData()) ?? {}) as IDataStore;
-        await this.saveData({ ...existing, data } as Record<string, unknown>);
+        const store = (await this.loadData()) as IDataStore | null;
+        const existingData = store?.data ?? {};
+        const mergedData = { ...existingData, ...data };
+        await this.saveData({ ...store, data: mergedData } as Record<string, unknown>);
       },
     };
   }
@@ -220,11 +219,11 @@ class ForgottenNotesRenderChild extends MarkdownRenderChild {
       }
       this.renderNoteContent(container, note, scale, settings.displayPathSegments);
     } else {
-      container.style.display = "flex";
-      container.style.flexWrap = "wrap";
+      container.style.display = "grid";
+      container.style.gridTemplateColumns = "repeat(auto-fill, minmax(160px, 1fr))";
       container.style.gap = "12px";
 
-      const notes = this.api.getForgottenNotes(settings.notesToShow);
+      const notes = await this.api.getForgottenNotes(settings.notesToShow);
       if (notes.length === 0) {
         container.innerHTML = `<span style="opacity:0.6;">✨ Все заметки недавно посещались</span>`;
         return;
@@ -233,7 +232,7 @@ class ForgottenNotesRenderChild extends MarkdownRenderChild {
       for (const note of notes) {
         const cardEl = container.createEl("div");
         cardEl.style.cssText =
-          "flex:1;min-width:160px;padding:10px;border-radius:8px;background-color:rgba(128,128,128,0.05);border:1px solid rgba(128,128,128,0.2);display:flex;align-items:center;gap:12px;";
+          "padding:10px;border-radius:8px;background-color:rgba(128,128,128,0.05);border:1px solid rgba(128,128,128,0.2);display:flex;align-items:center;gap:12px;";
         this.renderNoteContent(cardEl, note, scale, settings.displayPathSegments);
       }
     }

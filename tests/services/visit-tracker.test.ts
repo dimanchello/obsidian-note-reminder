@@ -1,7 +1,6 @@
 import type { TFile } from "obsidian";
 import { VisitTracker } from "../../src/services/visit-tracker";
-import { FrontmatterEditor } from "../../src/services/frontmatter-editor";
-import type { IMetadataReader, IVaultReader } from "../../src/interfaces";
+import type { IDataPersistence, IPluginData } from "../../src/interfaces";
 
 function createMockFile(path: string, basename: string): TFile {
   return {
@@ -14,90 +13,106 @@ function createMockFile(path: string, basename: string): TFile {
   } as TFile;
 }
 
-function createMetadataMock(cachedDate: string | undefined): IMetadataReader {
+function createPersistenceMock(initialData: IPluginData | null): IDataPersistence {
+  let data = initialData;
   return {
-    getFileCache: jest
-      .fn()
-      .mockReturnValue(
-        cachedDate !== undefined
-          ? { frontmatter: { date_last_visit: cachedDate } }
-          : { frontmatter: {} },
-      ),
-  };
-}
-
-function createVaultMock(content: string): IVaultReader {
-  return {
-    getMarkdownFiles: jest.fn().mockReturnValue([]),
-    read: jest.fn().mockResolvedValue(content),
-    modify: jest.fn().mockResolvedValue(undefined),
-    getAbstractFileByPath: jest.fn().mockReturnValue(null),
+    loadData: jest.fn().mockImplementation(() => Promise.resolve(data ? { ...data } : null)),
+    saveData: jest.fn().mockImplementation((newData: IPluginData) => {
+      data = { ...(data ?? {}), ...newData };
+      return Promise.resolve();
+    }),
   };
 }
 
 describe("VisitTracker", () => {
-  let editor: FrontmatterEditor;
-  let vault: IVaultReader;
-  let metadata: IMetadataReader;
+  let persistence: IDataPersistence;
   let tracker: VisitTracker;
 
   beforeEach(() => {
     jest.useFakeTimers();
     jest.setSystemTime(new Date("2026-05-30T12:00:00Z"));
-    editor = new FrontmatterEditor();
   });
 
   afterEach(() => {
     jest.useRealTimers();
   });
 
-  it("skips update if cached date_last_visit already matches today", async () => {
-    metadata = createMetadataMock("2026-05-30");
-    vault = createVaultMock("---\ntitle: Test\ndate_last_visit: 2026-05-30\n---\n\nBody");
-    tracker = new VisitTracker(editor, metadata, vault);
+  it("skips update if visit already exists for today", async () => {
+    persistence = createPersistenceMock({
+      visits: { "test.md": "2026-05-30" },
+    });
+    tracker = new VisitTracker(persistence);
 
     await tracker.onFileOpened(createMockFile("test.md", "test"));
 
-    expect(vault.read).not.toHaveBeenCalled();
-    expect(vault.modify).not.toHaveBeenCalled();
+    expect(persistence.saveData).not.toHaveBeenCalled();
   });
 
-  it("updates date_last_visit when cached value differs", async () => {
-    metadata = createMetadataMock("2026-05-15");
-    vault = createVaultMock("---\ntitle: Test\ndate_last_visit: 2026-05-15\n---\n\nBody");
-    tracker = new VisitTracker(editor, metadata, vault);
+  it("updates visit when cached value differs", async () => {
+    persistence = createPersistenceMock({
+      visits: { "test.md": "2026-05-15" },
+    });
+    tracker = new VisitTracker(persistence);
 
     await tracker.onFileOpened(createMockFile("test.md", "test"));
 
-    expect(vault.read).toHaveBeenCalledTimes(1);
-    expect(vault.modify).toHaveBeenCalledTimes(1);
+    expect(persistence.saveData).toHaveBeenCalledTimes(1);
   });
 
-  it("updates date_last_visit when cached value is missing", async () => {
-    metadata = createMetadataMock(undefined);
-    vault = createVaultMock("---\ntitle: Test\n---\n\nBody");
-    tracker = new VisitTracker(editor, metadata, vault);
+  it("adds visit when file has no existing entry", async () => {
+    persistence = createPersistenceMock(null);
+    tracker = new VisitTracker(persistence);
 
     await tracker.onFileOpened(createMockFile("test.md", "test"));
 
-    expect(vault.read).toHaveBeenCalledTimes(1);
-    expect(vault.modify).toHaveBeenCalledTimes(1);
+    expect(persistence.saveData).toHaveBeenCalledTimes(1);
+    const saveMock = persistence.saveData as jest.Mock;
+    const calls = saveMock.mock.calls as IPluginData[][];
+    const savedData = calls[0]?.[0] ?? {};
+    expect(savedData.visits).toEqual({ "test.md": "2026-05-30" });
   });
 
-  it("adds frontmatter if file has none", async () => {
-    metadata = {
-      getFileCache: jest.fn().mockReturnValue({ frontmatter: undefined }),
-    };
-    vault = createVaultMock("# Content without frontmatter");
-    tracker = new VisitTracker(editor, metadata, vault);
+  it("updates path in visits when file is renamed", async () => {
+    persistence = createPersistenceMock({
+      visits: { "old/path.md": "2026-05-15" },
+    });
+    tracker = new VisitTracker(persistence);
+
+    await tracker.onFileRenamed("old/path.md", "new/path.md");
+
+    expect(persistence.saveData).toHaveBeenCalledTimes(1);
+    const saveMock = persistence.saveData as jest.Mock;
+    const calls = saveMock.mock.calls as IPluginData[][];
+    const savedData = calls[0]?.[0] ?? {};
+    expect(savedData.visits).toEqual({ "new/path.md": "2026-05-15" });
+    expect(savedData.visits?.["old/path.md"]).toBeUndefined();
+  });
+
+  it("does nothing on rename if old path not in visits", async () => {
+    persistence = createPersistenceMock({
+      visits: { "other.md": "2026-05-15" },
+    });
+    tracker = new VisitTracker(persistence);
+
+    await tracker.onFileRenamed("unknown.md", "new.md");
+
+    expect(persistence.saveData).not.toHaveBeenCalled();
+  });
+
+  it("preserves existing pick data when saving visit", async () => {
+    persistence = createPersistenceMock({
+      lastPickTime: 1000,
+      lastPickPath: "some.md",
+    });
+    tracker = new VisitTracker(persistence);
 
     await tracker.onFileOpened(createMockFile("test.md", "test"));
 
-    expect(vault.read).toHaveBeenCalledTimes(1);
-    expect(vault.modify).toHaveBeenCalledTimes(1);
-    const modifyMock = vault.modify as jest.Mock;
-    const calls = modifyMock.mock.calls as string[][];
-    const modifiedContent = calls[0]?.[1] ?? "";
-    expect(modifiedContent).toContain("date_last_visit: 2026-05-30");
+    const saveMock = persistence.saveData as jest.Mock;
+    const calls = saveMock.mock.calls as IPluginData[][];
+    const savedData = calls[0]?.[0] ?? {};
+    expect(savedData.lastPickTime).toBe(1000);
+    expect(savedData.lastPickPath).toBe("some.md");
+    expect(savedData.visits).toEqual({ "test.md": "2026-05-30" });
   });
 });

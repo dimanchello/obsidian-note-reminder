@@ -2,28 +2,23 @@ import type { TFile } from "obsidian";
 import type {
   IForgottenNotePicker,
   IForgottenNoteInfo,
-  IMetadataReader,
   IVaultReader,
   IDataPersistence,
   IPluginData,
   IPluginSettings,
 } from "../interfaces";
 import { PICK_INTERVAL_MS } from "../constants";
-import { FrontmatterEditor } from "./frontmatter-editor";
 
 export class ForgottenNotePicker implements IForgottenNotePicker {
-  private readonly metadata: IMetadataReader;
   private readonly vault: IVaultReader;
   private readonly persistence: IDataPersistence;
   private settings: IPluginSettings;
 
   constructor(
-    metadata: IMetadataReader,
     vault: IVaultReader,
     persistence: IDataPersistence,
     settings: IPluginSettings,
   ) {
-    this.metadata = metadata;
     this.vault = vault;
     this.persistence = persistence;
     this.settings = settings;
@@ -35,18 +30,19 @@ export class ForgottenNotePicker implements IForgottenNotePicker {
 
   public async pick(): Promise<IForgottenNoteInfo | null> {
     const data = (await this.persistence.loadData()) ?? {};
+    const visits = data.visits ?? {};
     const now = Date.now();
 
     const intervalMs = this.getRotationIntervalMs();
-    const cached = this.getCachedPick(data, now, intervalMs);
+    const cached = this.getCachedPick(data, now, intervalMs, visits);
     if (cached !== null) {
       return cached;
     }
 
     const useRotation = this.settings.forgottenNoteRotationMinutes > 0;
     const candidate = useRotation
-      ? this.selectNextForgotten(data.lastPickPath)
-      : this.selectRandomForgotten();
+      ? this.selectNextForgotten(data.lastPickPath, visits)
+      : this.selectRandomForgotten(visits);
     if (candidate === null) {
       return null;
     }
@@ -57,7 +53,7 @@ export class ForgottenNotePicker implements IForgottenNotePicker {
     };
     await this.persistence.saveData(newData);
 
-    return this.buildNoteInfo(candidate);
+    return this.buildNoteInfo(candidate, visits);
   }
 
   public getRotationIntervalMs(): number {
@@ -65,7 +61,12 @@ export class ForgottenNotePicker implements IForgottenNotePicker {
     return minutes > 0 ? minutes * 60 * 1_000 : PICK_INTERVAL_MS;
   }
 
-  private getCachedPick(data: IPluginData, now: number, intervalMs: number): IForgottenNoteInfo | null {
+  private getCachedPick(
+    data: IPluginData,
+    now: number,
+    intervalMs: number,
+    visits: Record<string, string>,
+  ): IForgottenNoteInfo | null {
     if (data.lastPickTime === undefined || data.lastPickPath === undefined) {
       return null;
     }
@@ -73,25 +74,32 @@ export class ForgottenNotePicker implements IForgottenNotePicker {
     if (now - data.lastPickTime < intervalMs) {
       const file = this.vault.getAbstractFileByPath(data.lastPickPath);
       if (file !== null) {
-        return this.buildNoteInfo(file);
+        return this.buildNoteInfo(file, visits);
       }
     }
 
     return null;
   }
 
-  public pickMultiple(count: number): IForgottenNoteInfo[] {
-    const candidates = this.getForgottenCandidates();
+  public async pickMultiple(count: number): Promise<IForgottenNoteInfo[]> {
+    const data = (await this.persistence.loadData()) ?? {};
+    const visits = data.visits ?? {};
+    const candidates = this.getForgottenCandidates(visits);
 
     if (candidates.length === 0) {
       return [];
     }
 
-    this.sortCandidatesByForgottenness(candidates);
-    return candidates.slice(0, count).map((f) => this.buildNoteInfo(f));
+    const selected = new Set<number>();
+    const max = Math.min(count, candidates.length);
+    while (selected.size < max) {
+      selected.add(Math.floor(Math.random() * candidates.length));
+    }
+
+    return Array.from(selected).map((i) => this.buildNoteInfo(candidates[i]!, visits));
   }
 
-  private getForgottenCandidates(): TFile[] {
+  private getForgottenCandidates(visits: Record<string, string>): TFile[] {
     const files = this.vault.getMarkdownFiles();
     const threshold = new Date();
     threshold.setDate(threshold.getDate() - this.settings.forgottenDaysThreshold);
@@ -105,7 +113,7 @@ export class ForgottenNotePicker implements IForgottenNotePicker {
       if (this.isExcluded(file.path)) {
         continue;
       }
-      if (this.isForgotten(file, threshold)) {
+      if (this.isForgotten(file, threshold, visits)) {
         candidates.push(file);
       }
     }
@@ -113,10 +121,10 @@ export class ForgottenNotePicker implements IForgottenNotePicker {
     return candidates;
   }
 
-  private sortCandidatesByForgottenness(candidates: TFile[]): void {
+  private sortCandidatesByForgottenness(candidates: TFile[], visits: Record<string, string>): void {
     candidates.sort((a, b) => {
-      const visitA = this.readLastVisitFromCache(a);
-      const visitB = this.readLastVisitFromCache(b);
+      const visitA = this.readLastVisitFromData(a, visits);
+      const visitB = this.readLastVisitFromData(b, visits);
       if (visitA === null && visitB === null) {
         return a.path.localeCompare(b.path);
       }
@@ -134,14 +142,14 @@ export class ForgottenNotePicker implements IForgottenNotePicker {
     });
   }
 
-  private selectNextForgotten(previousPath: string | undefined): TFile | null {
-    const candidates = this.getForgottenCandidates();
+  private selectNextForgotten(previousPath: string | undefined, visits: Record<string, string>): TFile | null {
+    const candidates = this.getForgottenCandidates(visits);
 
     if (candidates.length === 0) {
       return null;
     }
 
-    this.sortCandidatesByForgottenness(candidates);
+    this.sortCandidatesByForgottenness(candidates, visits);
 
     if (previousPath === undefined) {
       return candidates[0] ?? null;
@@ -156,8 +164,8 @@ export class ForgottenNotePicker implements IForgottenNotePicker {
     return candidates[nextIndex] ?? null;
   }
 
-  private selectRandomForgotten(): TFile | null {
-    const candidates = this.getForgottenCandidates();
+  private selectRandomForgotten(visits: Record<string, string>): TFile | null {
+    const candidates = this.getForgottenCandidates(visits);
 
     if (candidates.length === 0) {
       return null;
@@ -182,19 +190,9 @@ export class ForgottenNotePicker implements IForgottenNotePicker {
     return patterns.some((pattern) => new RegExp(pattern).test(filePath));
   }
 
-  private isForgotten(file: TFile, threshold: Date): boolean {
-    const cache = this.metadata.getFileCache(file);
-
-    if (cache?.frontmatter === undefined) {
-      return true;
-    }
-
-    const lastVisit = cache.frontmatter[DATE_LAST_VISIT_FIELD];
-    if (lastVisit === undefined || lastVisit === null) {
-      return true;
-    }
-
-    if (typeof lastVisit !== "string") {
+  private isForgotten(file: TFile, threshold: Date, visits: Record<string, string>): boolean {
+    const lastVisit = visits[file.path];
+    if (lastVisit === undefined) {
       return true;
     }
 
@@ -206,9 +204,15 @@ export class ForgottenNotePicker implements IForgottenNotePicker {
     return lastVisitDate < threshold;
   }
 
-  private buildNoteInfo(file: TFile): IForgottenNoteInfo {
-    const lastVisit = this.readLastVisitFromCache(file);
-    const daysAgo = FrontmatterEditor.daysAgo(lastVisit);
+  private buildNoteInfo(file: TFile, visits: Record<string, string>): IForgottenNoteInfo {
+    const lastVisit = this.readLastVisitFromData(file, visits);
+    let daysAgo: number | null = null;
+    if (lastVisit !== null) {
+      const d = new Date(lastVisit);
+      if (!Number.isNaN(d.getTime())) {
+        daysAgo = Math.floor((Date.now() - d.getTime()) / (1000 * 60 * 60 * 24));
+      }
+    }
 
     return {
       path: file.path,
@@ -218,20 +222,7 @@ export class ForgottenNotePicker implements IForgottenNotePicker {
     };
   }
 
-  private readLastVisitFromCache(file: TFile): string | null {
-    const cache = this.metadata.getFileCache(file);
-
-    if (cache?.frontmatter === undefined) {
-      return null;
-    }
-
-    const value = cache.frontmatter[DATE_LAST_VISIT_FIELD];
-    if (typeof value !== "string") {
-      return null;
-    }
-
-    return value;
+  private readLastVisitFromData(file: TFile, visits: Record<string, string>): string | null {
+    return visits[file.path] ?? null;
   }
 }
-
-const DATE_LAST_VISIT_FIELD = "date_last_visit";

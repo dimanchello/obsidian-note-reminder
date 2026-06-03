@@ -19,6 +19,7 @@ export interface IForgottenNoteInfo {
 export interface IPluginData {
   readonly lastPickTime?: number;
   readonly lastPickPath?: string;
+  readonly visits?: Record<string, string>;
 }
 
 export interface IDataStore {
@@ -48,16 +49,17 @@ export interface IFrontmatterCache {
 
 export interface IVisitTracker {
   onFileOpened(file: TFile): Promise<void>;
+  onFileRenamed(oldPath: string, newPath: string): Promise<void>;
 }
 
 export interface IForgottenNotePicker {
   pick(): Promise<IForgottenNoteInfo | null>;
-  pickMultiple(count: number): IForgottenNoteInfo[];
+  pickMultiple(count: number): Promise<IForgottenNoteInfo[]>;
 }
 
 export interface IDateTrackerAPI {
   getForgottenNote(): Promise<IForgottenNoteInfo | null>;
-  getForgottenNotes(count: number): IForgottenNoteInfo[];
+  getForgottenNotes(count: number): Promise<IForgottenNoteInfo[]>;
   getRotationIntervalMs(): number;
 }
 

@@ -12,7 +12,7 @@ export class DateTrackerAPI implements IDateTrackerAPI {
     return this.picker.pick();
   }
 
-  public getForgottenNotes(count: number): IForgottenNoteInfo[] {
+  public async getForgottenNotes(count: number): Promise<IForgottenNoteInfo[]> {
     return this.picker.pickMultiple(count);
   }
 
