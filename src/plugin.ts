@@ -1,4 +1,4 @@
-import { Plugin, Notice, MarkdownRenderChild, App } from "obsidian";
+import { Plugin, Notice, MarkdownRenderChild, App, Platform } from "obsidian";
 import { VisitTracker } from "./services/visit-tracker";
 import { ForgottenNotePicker } from "./services/forgotten-note-picker";
 import { DateTrackerAPI } from "./api";
@@ -220,7 +220,7 @@ class ForgottenNotesRenderChild extends MarkdownRenderChild {
       this.renderNoteContent(container, note, scale, settings.displayPathSegments);
     } else {
       container.style.display = "grid";
-      container.style.gridTemplateColumns = "repeat(auto-fill, minmax(160px, 1fr))";
+      container.style.gridTemplateColumns = Platform.isMobile ? "1fr" : "repeat(auto-fill, minmax(160px, 1fr))";
       container.style.gap = "12px";
 
       const notes = await this.api.getForgottenNotes(settings.notesToShow);
